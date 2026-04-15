@@ -1,0 +1,60 @@
+version: '3.9'
+
+services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - server
+      - client
+    networks:
+      - snowbrawl
+    restart: unless-stopped
+
+  server:
+    build:
+      context: ./server
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - snowbrawl
+    restart: unless-stopped
+    # To scale horizontally (Redis adapter handles cross-instance events):
+    #   docker compose up --scale server=3
+    # nginx ip_hash ensures sticky WebSocket sessions automatically.
+
+  client:
+    build:
+      context: ./client
+    networks:
+      - snowbrawl
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - snowbrawl
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+networks:
+  snowbrawl:
+    driver: bridge
+
+volumes:
+  redis_data:
