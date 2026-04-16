@@ -11,8 +11,8 @@ const MAP_W      = MAP_COLS * TILE;   // 960 px
 const MAP_H      = MAP_ROWS * TILE;   // 640 px
 
 // Team zones (pixel x boundaries enforced during countdown)
-const BLUE_ZONE_MAX_X = 14 * TILE;   // 224 — blue can't go past this rightward
-const RED_ZONE_MIN_X  = 46 * TILE;   // 736 — red can't go past this leftward
+const BLUE_ZONE_MAX_X = 14 * TILE;   // 224
+const RED_ZONE_MIN_X  = 46 * TILE;   // 736
 
 // Physics
 const PLAYER_SPEED  = 120;   // px / s
@@ -20,19 +20,24 @@ const PLAYER_RADIUS = 8;
 const PLAYER_HP     = 100;
 const HP_PER_HIT    = 25;    // 4 hits = eliminated
 
-const BALL_SPEED    = 290;   // px / s
-const BALL_RADIUS   = 5;
-const BALL_MAX_DIST = 450;   // px before despawn
-const BALL_COOLDOWN = 750;   // ms between throws
+const BALL_SPEED      = 290;   // px / s
+const BALL_RADIUS     = 5;
+const BALL_STD_DIST   = 400;   // px — standard (tap) throw distance
+const BALL_BONUS_DIST = 350;   // extra px for full-power (1 s held) throw
+
+const BUILD_TIME         = 800;   // ms to build a snowball
+const DROP_PICKUP_R      = 24;    // px radius to pick up a dropped ball
+const PLAYER_SPRINT_SPEED = 220;  // px/s while sprinting (vs 120 normal)
+const SPRINT_DURATION    = 3000;  // ms of sprint per activation
 
 // Tick rate
 const TICK_RATE = 20;
 const TICK_MS   = 1000 / TICK_RATE;  // 50 ms
 
-// ─── Snow pile positions (tile coords) ──────────────────────────────────────
+// ─── Snow pile positions (tile coords) ───────────────────────────────────────
 // Each pile is 2×2 tiles (32×32 px). Laid out for bilateral symmetry x=30.
 const SNOW_PILE_TILES = [
-  // Inner zone edges — force players off spawn line
+  // Inner zone edges
   [15,  5], [45,  5],
   [15, 15], [45, 15],
   [15, 25], [45, 25],
@@ -47,7 +52,7 @@ const SNOW_PILE_TILES = [
   // Central fortress
   [29, 19], [31, 19],
   [29, 21], [31, 21],
-  // Flanking cover deep in zones
+  // Flanking cover
   [ 8, 12], [52, 12],
   [ 8, 28], [52, 28],
 ];
@@ -63,19 +68,22 @@ const SNOW_PILES = SNOW_PILE_TILES.map(([col, row]) => ({
 // ─── GameRoom ─────────────────────────────────────────────────────────────────
 class GameRoom {
   constructor(io, id, name, passwordHash) {
-    this.io           = io;
-    this.id           = id;
-    this.name         = name;
-    this.passwordHash = passwordHash;
-    this.status       = 'lobby';   // lobby | countdown | playing | finished
-    this.players      = {};        // socketId → PlayerState
-    this.snowballs    = [];        // SnowballState[]
-    this.hostId       = null;
-    this.countdown    = 10;
-    this.winner       = null;      // null | 0 (blue) | 1 (red) | 'draw'
-    this._cdTimer     = null;
-    this._gameTimer   = null;
-    this._lastTick    = 0;
+    this.io            = io;
+    this.id            = id;
+    this.name          = name;
+    this.passwordHash  = passwordHash;
+    this.status        = 'lobby';
+    this.players       = {};
+    this.snowballs     = [];
+    this.droppedBalls  = [];   // { id, x, y, tileKey }[]
+    this.dynamicPiles  = [];   // player-built barriers
+    this.depletedTiles = new Set();  // tile keys where snow was harvested
+    this.hostId        = null;
+    this.countdown     = 10;
+    this.winner        = null;
+    this._cdTimer      = null;
+    this._gameTimer    = null;
+    this._lastTick     = 0;
   }
 
   // ─── Player management ────────────────────────────────────────────────────
@@ -83,19 +91,23 @@ class GameRoom {
   addPlayer(socketId, name, team, isHost) {
     if (isHost) this.hostId = socketId;
     this.players[socketId] = {
-      id:          socketId,
+      id:           socketId,
       name,
-      team,          // 0 = blue, 1 = red
+      team,
       isHost,
-      x:           this._spawnX(team),
-      y:           this._spawnY(),
-      health:      PLAYER_HP,
-      alive:       true,
-      score:       0,
-      kills:       0,
-      input:       { up: false, down: false, left: false, right: false },
-      aimAngle:    0,
-      lastThrowAt: 0,
+      x:            this._spawnX(team),
+      y:            this._spawnY(),
+      health:       PLAYER_HP,
+      alive:        true,
+      score:        0,
+      kills:        0,
+      input:        { up: false, down: false, left: false, right: false },
+      aimAngle:     0,          // derived from movement direction
+      heldBall:     false,      // holding a built snowball
+      isBuilding:   false,      // currently building one
+      buildStartAt: 0,
+      isSprinting:  false,
+      sprintEndAt:  0,
     };
   }
 
@@ -104,7 +116,7 @@ class GameRoom {
     if (this.hostId === socketId) {
       const ids = Object.keys(this.players);
       if (ids.length > 0) {
-        this.hostId                = ids[0];
+        this.hostId                 = ids[0];
         this.players[ids[0]].isHost = true;
         this.io.to(this.id).emit('new_host', { id: ids[0] });
       }
@@ -122,11 +134,12 @@ class GameRoom {
       left:  !!input.left,
       right: !!input.right,
     };
-    if (typeof input.aimAngle === 'number' && isFinite(input.aimAngle)) {
-      p.aimAngle = input.aimAngle;
-    }
-    if (input.throw && this.status === 'playing') {
-      this._spawnBall(socketId);
+
+    if (this.status === 'playing') {
+      if (input.build)   this._tryBuild(socketId);
+      if (input.pickup)  this._tryPickupOrDrop(socketId);
+      if (input.throw)   this._tryThrow(socketId, input.throwPower || 0);
+      if (input.sprint)  this._trySprint(socketId);
     }
   }
 
@@ -157,8 +170,12 @@ class GameRoom {
     this.status    = 'playing';
     this._lastTick = Date.now();
     for (const p of Object.values(this.players)) {
-      p.input       = { up: false, down: false, left: false, right: false };
-      p.lastThrowAt = 0;
+      p.input        = { up: false, down: false, left: false, right: false };
+      p.heldBall     = false;
+      p.isBuilding   = false;
+      p.buildStartAt = 0;
+      p.isSprinting  = false;
+      p.sprintEndAt  = 0;
     }
     this.io.to(this.id).emit('game_started', { gameState: this._buildGameState() });
     this._gameTimer = setInterval(() => this._tick(), TICK_MS);
@@ -171,6 +188,8 @@ class GameRoom {
     const dt  = Math.min((now - this._lastTick) / 1000, 0.1);
     this._lastTick = now;
 
+    this._processBuild(now);
+    this._updateFacing();
     this._movePlayers(dt);
     this._moveBalls(dt);
     this._checkWin();
@@ -180,9 +199,44 @@ class GameRoom {
     }
   }
 
-  _movePlayers(dt) {
+  // Complete any builds whose timer has elapsed
+  _processBuild(now) {
+    for (const p of Object.values(this.players)) {
+      if (!p.alive || !p.isBuilding) continue;
+      if (now - p.buildStartAt >= BUILD_TIME) {
+        p.isBuilding   = false;
+        p.buildStartAt = 0;
+        p.heldBall     = true;
+        // Mark this tile's snow as depleted
+        this.depletedTiles.add(this._tileKey(p.x, p.y));
+      }
+    }
+  }
+
+  // Update aim angle based on most-recent movement direction
+  _updateFacing() {
     for (const p of Object.values(this.players)) {
       if (!p.alive) continue;
+      let dx = 0, dy = 0;
+      if (p.input.up)    dy -= 1;
+      if (p.input.down)  dy += 1;
+      if (p.input.left)  dx -= 1;
+      if (p.input.right) dx += 1;
+      if (dx !== 0 || dy !== 0) {
+        p.aimAngle = Math.atan2(dy, dx);
+      }
+    }
+  }
+
+  _movePlayers(dt) {
+    const now = Date.now();
+    for (const p of Object.values(this.players)) {
+      if (!p.alive) continue;
+
+      // End sprint when timer expires
+      if (p.isSprinting && now >= p.sprintEndAt) {
+        p.isSprinting = false;
+      }
 
       let dx = 0, dy = 0;
       if (p.input.up)    dy -= 1;
@@ -191,8 +245,9 @@ class GameRoom {
       if (p.input.right) dx += 1;
       if (dx !== 0 && dy !== 0) { dx *= 0.7071; dy *= 0.7071; }
 
-      let nx = p.x + dx * PLAYER_SPEED * dt;
-      let ny = p.y + dy * PLAYER_SPEED * dt;
+      const speed = p.isSprinting ? PLAYER_SPRINT_SPEED : PLAYER_SPEED;
+      let nx = p.x + dx * speed * dt;
+      let ny = p.y + dy * speed * dt;
 
       // Zone restriction during countdown
       if (this.status === 'countdown') {
@@ -208,8 +263,8 @@ class GameRoom {
       if (!this._hitsAnyPile(nx, ny, PLAYER_RADIUS)) {
         p.x = nx; p.y = ny;
       } else {
-        const tx = p.x + dx * PLAYER_SPEED * dt;
-        const ty = p.y + dy * PLAYER_SPEED * dt;
+        const tx = p.x + dx * speed * dt;
+        const ty = p.y + dy * speed * dt;
         if (!this._hitsAnyPile(
           Math.max(PLAYER_RADIUS, Math.min(MAP_W - PLAYER_RADIUS, tx)),
           p.y, PLAYER_RADIUS)) {
@@ -232,7 +287,7 @@ class GameRoom {
       b.y    += b.vy * dt;
       b.dist += Math.hypot(b.vx, b.vy) * dt;
 
-      if (b.dist >= BALL_MAX_DIST)                           { dead.push(b.id); continue; }
+      if (b.dist >= b.maxDist)                              { dead.push(b.id); continue; }
       if (b.x < 0 || b.x > MAP_W || b.y < 0 || b.y > MAP_H){ dead.push(b.id); continue; }
       if (this._hitsAnyPile(b.x, b.y, BALL_RADIUS)) {
         dead.push(b.id);
@@ -250,8 +305,11 @@ class GameRoom {
           this.io.to(this.id).emit('fx_hit', { x: p.x, y: p.y });
 
           if (p.health <= 0) {
-            p.health = 0;
-            p.alive  = false;
+            p.health      = 0;
+            p.alive       = false;
+            p.heldBall    = false;
+            p.isBuilding  = false;
+            p.isSprinting = false;
             if (thrower) { thrower.score += 50; thrower.kills++; }
             this.io.to(this.id).emit('player_eliminated', {
               id:   p.id,
@@ -294,37 +352,105 @@ class GameRoom {
       kills: p.kills, score: p.score,
     }));
     this.io.to(this.id).emit('game_over', { winner, stats });
-
-    // Auto-reset to lobby after 12 s
     setTimeout(() => this._resetLobby(), 12000);
   }
 
   _resetLobby() {
-    this.status    = 'lobby';
-    this.snowballs = [];
-    this.winner    = null;
-    this.countdown = 10;
+    this.status        = 'lobby';
+    this.snowballs     = [];
+    this.droppedBalls  = [];
+    this.dynamicPiles  = [];
+    this.depletedTiles = new Set();
+    this.winner        = null;
+    this.countdown     = 10;
     for (const p of Object.values(this.players)) {
-      p.health      = PLAYER_HP;
-      p.alive       = true;
-      p.score       = 0;
-      p.kills       = 0;
-      p.x           = this._spawnX(p.team);
-      p.y           = this._spawnY();
-      p.input       = { up: false, down: false, left: false, right: false };
-      p.lastThrowAt = 0;
+      p.health       = PLAYER_HP;
+      p.alive        = true;
+      p.score        = 0;
+      p.kills        = 0;
+      p.x            = this._spawnX(p.team);
+      p.y            = this._spawnY();
+      p.input        = { up: false, down: false, left: false, right: false };
+      p.heldBall     = false;
+      p.isBuilding   = false;
+      p.buildStartAt = 0;
+      p.isSprinting  = false;
+      p.sprintEndAt  = 0;
     }
     this.io.to(this.id).emit('lobby_reset', { roomState: this.getLobbyState() });
   }
 
-  // ─── Snowball factory ─────────────────────────────────────────────────────
+  // ─── Snowball actions ─────────────────────────────────────────────────────
 
-  _spawnBall(socketId) {
-    const p   = this.players[socketId];
+  _tryBuild(socketId) {
+    const p = this.players[socketId];
+    if (!p || !p.alive || p.heldBall || p.isBuilding) return;
+    // Can't build from a depleted tile
+    if (this.depletedTiles.has(this._tileKey(p.x, p.y))) return;
+    p.isBuilding   = true;
+    p.buildStartAt = Date.now();
+  }
+
+  _tryPickupOrDrop(socketId) {
+    const p = this.players[socketId];
     if (!p || !p.alive) return;
-    const now = Date.now();
-    if (now - p.lastThrowAt < BALL_COOLDOWN) return;
-    p.lastThrowAt = now;
+
+    if (p.heldBall) {
+      // Drop the held ball at current position
+      p.heldBall = false;
+      const id      = uuidv4().substring(0, 8);
+      const tileKey = this._tileKey(p.x, p.y);
+      this.droppedBalls.push({ id, x: p.x, y: p.y, tileKey });
+
+      // If 3 balls dropped on the same tile, convert to a barrier
+      const sameTile = this.droppedBalls.filter(b => b.tileKey === tileKey);
+      if (sameTile.length >= 3) {
+        const toRemove = new Set(sameTile.slice(0, 3).map(b => b.id));
+        this.droppedBalls = this.droppedBalls.filter(b => !toRemove.has(b.id));
+        const [col, row]  = tileKey.split('_').map(Number);
+        this.dynamicPiles.push({
+          id: `dyn_${col}_${row}_${Date.now()}`,
+          x:  col * TILE,
+          y:  row * TILE,
+          w:  TILE * 2,
+          h:  TILE * 2,
+        });
+      }
+    } else {
+      // Try to pick up the nearest dropped ball within range
+      let nearest  = null;
+      let nearDist = Infinity;
+      for (const b of this.droppedBalls) {
+        const d = Math.hypot(b.x - p.x, b.y - p.y);
+        if (d <= DROP_PICKUP_R && d < nearDist) {
+          nearest  = b;
+          nearDist = d;
+        }
+      }
+      if (nearest) {
+        this.droppedBalls = this.droppedBalls.filter(b => b.id !== nearest.id);
+        p.heldBall = true;
+      }
+    }
+  }
+
+  _trySprint(socketId) {
+    const p = this.players[socketId];
+    if (!p || !p.alive || p.isSprinting) return;
+    // Require more than one health bar to sprint
+    if (p.health <= HP_PER_HIT) return;
+    p.health      -= HP_PER_HIT;
+    p.isSprinting  = true;
+    p.sprintEndAt  = Date.now() + SPRINT_DURATION;
+    this.io.to(this.id).emit('player_hit', { id: p.id, health: p.health });
+  }
+
+  _tryThrow(socketId, throwPower) {
+    const p = this.players[socketId];
+    if (!p || !p.alive || !p.heldBall) return;
+    p.heldBall = false;
+    // throwPower: 0–1000 ms. 0 = standard distance, 1000 = max.
+    const maxDist = BALL_STD_DIST + Math.min(throwPower / 1000, 1) * BALL_BONUS_DIST;
 
     this.snowballs.push({
       id:        uuidv4().substring(0, 8),
@@ -335,15 +461,20 @@ class GameRoom {
       vx:        Math.cos(p.aimAngle) * BALL_SPEED,
       vy:        Math.sin(p.aimAngle) * BALL_SPEED,
       dist:      0,
+      maxDist,
     });
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
+  _tileKey(x, y) {
+    return `${Math.floor(x / TILE)}_${Math.floor(y / TILE)}`;
+  }
+
   _spawnX(team) {
     return team === 0
-      ? (2  + Math.random() * 8)  * TILE
-      : (50 + Math.random() * 8)  * TILE;
+      ? (2  + Math.random() * 8) * TILE
+      : (50 + Math.random() * 8) * TILE;
   }
 
   _spawnY() {
@@ -352,6 +483,9 @@ class GameRoom {
 
   _hitsAnyPile(cx, cy, cr) {
     for (const pile of SNOW_PILES) {
+      if (circleRect(cx, cy, cr, pile.x, pile.y, pile.w, pile.h)) return true;
+    }
+    for (const pile of this.dynamicPiles) {
       if (circleRect(cx, cy, cr, pile.x, pile.y, pile.w, pile.h)) return true;
     }
     return false;
@@ -381,27 +515,38 @@ class GameRoom {
   }
 
   _buildGameState() {
+    const now     = Date.now();
     const players = {};
     for (const p of Object.values(this.players)) {
       players[p.id] = {
-        id:     p.id,
-        name:   p.name,
-        team:   p.team,
-        x:      p.x,
-        y:      p.y,
-        health: p.health,
-        alive:  p.alive,
-        kills:  p.kills,
-        score:  p.score,
-        aimAngle: p.aimAngle,
+        id:            p.id,
+        name:          p.name,
+        team:          p.team,
+        x:             p.x,
+        y:             p.y,
+        health:        p.health,
+        alive:         p.alive,
+        kills:         p.kills,
+        score:         p.score,
+        aimAngle:      p.aimAngle,
+        heldBall:      p.heldBall,
+        isBuilding:    p.isBuilding,
+        buildProgress: p.isBuilding
+          ? Math.min((now - p.buildStartAt) / BUILD_TIME, 1)
+          : 0,
+        isSprinting:   p.isSprinting,
+        sprintLeft:    p.isSprinting ? Math.max(0, p.sprintEndAt - now) : 0,
       };
     }
     return {
-      tick:      Date.now(),
-      status:    this.status,
-      winner:    this.winner,
+      tick:          now,
+      status:        this.status,
+      winner:        this.winner,
       players,
-      snowballs: this.snowballs.map(b => ({ id: b.id, x: b.x, y: b.y })),
+      snowballs:     this.snowballs.map(b => ({ id: b.id, x: b.x, y: b.y })),
+      droppedBalls:  this.droppedBalls.map(b => ({ id: b.id, x: b.x, y: b.y })),
+      snowPiles:     [...SNOW_PILES, ...this.dynamicPiles],
+      depletedTiles: Array.from(this.depletedTiles),
     };
   }
 

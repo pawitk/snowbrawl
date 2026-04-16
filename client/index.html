@@ -488,6 +488,15 @@
     #hud-cooldown.ready  { color: #44ee44; }
     #hud-cooldown.reload { color: #aa7722; }
 
+    #hud-sprint {
+      font-size: 10px;
+      letter-spacing: 1px;
+      padding: 3px 8px;
+    }
+    #hud-sprint.active { color: #ffdd44; }
+    #hud-sprint.ready  { color: #887733; }
+    #hud-sprint.empty  { color: #553322; }
+
     .hud-bottom {
       position: absolute;
       bottom: 8px;
@@ -729,7 +738,8 @@
       <div class="hud-top">
         <div style="display:flex; flex-direction:column; gap:5px;">
           <div id="hud-health" class="hud-panel"></div>
-          <div id="hud-cooldown" class="hud-cooldown ready">● THROW READY</div>
+          <div id="hud-cooldown" class="hud-cooldown reload">○ J=BUILD  H=PICKUP</div>
+          <div id="hud-sprint"  class="hud-sprint ready">⚡ SHIFT=SPRINT (-1 HP bar)</div>
         </div>
         <div id="hud-scores" class="hud-panel">0 — 0</div>
         <div style="display:flex; flex-direction:column; gap:5px; align-items:flex-end;">
@@ -739,7 +749,7 @@
       </div>
 
       <div class="hud-bottom">
-        <div class="controls-hint">WASD: Move &nbsp;|&nbsp; Mouse: Aim &nbsp;|&nbsp; Click: Throw &nbsp;|&nbsp; Enter: Chat</div>
+        <div class="controls-hint">WASD: Move &nbsp;|&nbsp; J: Build &nbsp;|&nbsp; H: Pickup/Drop &nbsp;|&nbsp; SPACE: Throw (hold=power) &nbsp;|&nbsp; SHIFT: Sprint &nbsp;|&nbsp; Enter: Chat</div>
       </div>
     </div>
 

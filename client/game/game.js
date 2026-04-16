@@ -6,7 +6,6 @@ const Game = (() => {
   let running       = false;
   let lastFrame     = 0;
   let localPlayerId = null;
-  let lastThrowTime = 0;
 
   // Two-snapshot interpolation buffer
   let prevState    = null;
@@ -29,7 +28,6 @@ const Game = (() => {
     prevState    = curState;
     curState     = gs;
     curStateTime = Date.now();
-
     roomState.gameState = gs;
     roomState.phase     = gs.status || roomState.phase;
   }
@@ -66,20 +64,24 @@ const Game = (() => {
     const dt = Math.min((now - lastFrame) / 1000, 0.1);
     lastFrame = now;
 
-    // Send input
     const me = localPlayerId && roomState.gameState &&
                roomState.gameState.players &&
                roomState.gameState.players[localPlayerId];
 
-    if (SB.socket && me && (roomState.phase === 'playing' || roomState.phase === 'countdown')) {
-      const input = Input.getInputState(me.x, me.y);
-      if (input.throw) lastThrowTime = Date.now();
+    // Don't send game input while typing in chat
+    const inChat = document.activeElement &&
+      (document.activeElement.tagName === 'INPUT' ||
+       document.activeElement.tagName === 'TEXTAREA');
+
+    if (SB.socket && me && !inChat &&
+        (roomState.phase === 'playing' || roomState.phase === 'countdown')) {
+      const input = Input.getInputState();
       SB.socket.volatile.emit('player_input', input);
     }
 
-    // Render
+    const spaceCharge = Input.getSpaceCharge();
     Renderer.render(roomState, localPlayerId, dt);
-    Renderer.updateHUD(roomState.gameState, localPlayerId, roomState.phase, lastThrowTime);
+    Renderer.updateHUD(roomState.gameState, localPlayerId, roomState.phase, spaceCharge);
 
     requestAnimationFrame(loop);
   }

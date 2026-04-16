@@ -3,7 +3,7 @@
 // All coordinates are in world-space pixels. ctx is already scaled by camera.
 // imageSmoothingEnabled = false keeps edges crisp.
 
-function drawPlayer(ctx, x, y, team, health, aimAngle, isLocal, name) {
+function drawPlayer(ctx, x, y, team, health, aimAngle, isLocal, name, heldBall, buildProgress, isSprinting) {
   const cx = Math.round(x);
   const cy = Math.round(y);
   const tc = TEAM_COLOR[team];
@@ -81,6 +81,16 @@ function drawPlayer(ctx, x, y, team, health, aimAngle, isLocal, name) {
   ctx.fillStyle = tl;
   ctx.fillRect(-7, -5, 14, 3);
 
+  // ── Sprint glow ring ──
+  if (isSprinting) {
+    ctx.strokeStyle = 'rgba(255,220,80,0.8)';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(0, 0, 15, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
   // ── Local player glow ring ──
   if (isLocal) {
     ctx.strokeStyle = 'rgba(255,255,255,0.6)';
@@ -102,6 +112,33 @@ function drawPlayer(ctx, x, y, team, health, aimAngle, isLocal, name) {
   ctx.moveTo(0, -2);
   ctx.lineTo(ex, ey - 2);
   ctx.stroke();
+
+  // ── Held snowball ──
+  if (heldBall) {
+    const hx = Math.cos(aimAngle) * 11;
+    const hy = Math.sin(aimAngle) * 11 - 2;
+    ctx.fillStyle = '#f0f8ff';
+    ctx.beginPath();
+    ctx.arc(hx, hy, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#aaccdd';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.beginPath();
+    ctx.arc(hx - 1, hy - 1, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // ── Build progress arc ──
+  if (buildProgress > 0) {
+    ctx.strokeStyle = 'rgba(180,240,255,0.9)';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(0, 0, 17, -Math.PI / 2, -Math.PI / 2 + buildProgress * Math.PI * 2);
+    ctx.stroke();
+  }
 
   ctx.restore();
 
@@ -130,14 +167,18 @@ function drawPlayer(ctx, x, y, team, health, aimAngle, isLocal, name) {
   ctx.restore();
 }
 
-function drawSnowball(ctx, x, y) {
+function drawSnowball(ctx, x, y, isDropped) {
   const cx = Math.round(x);
   const cy = Math.round(y);
   ctx.save();
-  // Shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.2)';
+  // Shadow — larger ellipse for dropped (resting) balls
+  ctx.fillStyle = 'rgba(0,0,0,0.22)';
   ctx.beginPath();
-  ctx.ellipse(cx, cy + 3, 4, 2, 0, 0, Math.PI * 2);
+  if (isDropped) {
+    ctx.ellipse(cx, cy + 4, 6, 2.5, 0, 0, Math.PI * 2);
+  } else {
+    ctx.ellipse(cx, cy + 3, 4, 2, 0, 0, Math.PI * 2);
+  }
   ctx.fill();
   // Ball
   ctx.fillStyle = '#f0f8ff';
@@ -274,6 +315,22 @@ function drawCenterLine(ctx) {
   ctx.lineTo(MAP_W / 2, MAP_H);
   ctx.stroke();
   ctx.setLineDash([]);
+}
+
+function drawDepletedTiles(ctx, depletedTiles) {
+  for (const key of depletedTiles) {
+    const [col, row] = key.split('_').map(Number);
+    const tx = col * TILE;
+    const ty = row * TILE;
+    // Scooped-out snow: darker icy patch
+    ctx.fillStyle = '#9ab8cc';
+    ctx.fillRect(tx, ty, TILE, TILE);
+    // Inner depression layers
+    ctx.fillStyle = '#7a9aae';
+    ctx.fillRect(tx + 2, ty + 2, TILE - 4, TILE - 4);
+    ctx.fillStyle = '#658898';
+    ctx.fillRect(tx + 4, ty + 4, TILE - 8, TILE - 8);
+  }
 }
 
 // ── Particle effects (snow puffs, hit sparks) ─────────────────────────────────

@@ -1,72 +1,85 @@
 'use strict';
 // ── Input manager ─────────────────────────────────────────────────────────────
-// Tracks keyboard + mouse state. Computes aimAngle from mouse position relative
-// to the local player's canvas position. Exposes a getInputState() snapshot.
+// Keyboard-only. WASD/Arrows = move. J = build snowball. H = pickup/drop.
+// Space = throw (hold longer for more distance). Shift = sprint. No mouse needed.
 
 const Input = (() => {
   const keys = {};
-  let mouseX    = 0;
-  let mouseY    = 0;
-  let throwing  = false;   // mouse button held
-  let throwPulse = false;  // single-frame flag for click
+  let buildPulse   = false;   // single-frame: J pressed
+  let pickupPulse  = false;   // single-frame: H pressed
+  let sprintPulse  = false;   // single-frame: Shift pressed
+  let throwPulse   = false;   // single-frame: Space released
+  let throwPower   = 0;       // ms Space was held when released (0–1000)
+  let spaceDownAt  = 0;       // timestamp when Space was first pressed
 
   window.addEventListener('keydown', e => {
-    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) {
+    const inInput = document.activeElement &&
+      (document.activeElement.tagName === 'INPUT' ||
+       document.activeElement.tagName === 'TEXTAREA');
+
+    if (!inInput && ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) {
       e.preventDefault();
     }
-    keys[e.code] = true;
+
+    if (!inInput && !e.repeat) {
+      if (e.code === 'KeyJ')                           buildPulse  = true;
+      if (e.code === 'KeyH')                           pickupPulse = true;
+      if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') sprintPulse = true;
+      if (e.code === 'Space')                          spaceDownAt = Date.now();
+    }
+
+    if (!inInput) {
+      keys[e.code] = true;
+    }
   });
 
   window.addEventListener('keyup', e => {
+    const inInput = document.activeElement &&
+      (document.activeElement.tagName === 'INPUT' ||
+       document.activeElement.tagName === 'TEXTAREA');
+
+    if (!inInput && e.code === 'Space' && keys['Space']) {
+      throwPulse  = true;
+      throwPower  = spaceDownAt ? Math.min(Date.now() - spaceDownAt, 1000) : 0;
+      spaceDownAt = 0;
+    }
+
     keys[e.code] = false;
   });
 
-  const canvas = () => document.getElementById('game-canvas');
-
-  window.addEventListener('mousemove', e => {
-    const c = canvas();
-    if (!c) return;
-    const rect = c.getBoundingClientRect();
-    // Map screen coords to canvas logical coords
-    const scaleX = c.width  / rect.width;
-    const scaleY = c.height / rect.height;
-    mouseX = (e.clientX - rect.left) * scaleX;
-    mouseY = (e.clientY - rect.top)  * scaleY;
-  });
-
-  window.addEventListener('mousedown', e => {
-    if (e.button === 0) { throwing = true; throwPulse = true; }
-  });
-
-  window.addEventListener('mouseup', e => {
-    if (e.button === 0) throwing = false;
-  });
-
-  // Prevent right-click context menu on canvas
-  window.addEventListener('contextmenu', e => { if (canvas()) e.preventDefault(); });
-
-  function getInputState(playerCanvasX, playerCanvasY) {
-    const angle = Math.atan2(mouseY - playerCanvasY, mouseX - playerCanvasX);
-    const tp = throwPulse;
-    throwPulse = false;
+  function getInputState() {
+    const bp  = buildPulse;
+    const pp  = pickupPulse;
+    const sp  = sprintPulse;
+    const tp  = throwPulse;
+    const pow = throwPower;
+    buildPulse  = false;
+    pickupPulse = false;
+    sprintPulse = false;
+    throwPulse  = false;
+    throwPower  = 0;
     return {
-      up:       !!(keys['KeyW'] || keys['ArrowUp']),
-      down:     !!(keys['KeyS'] || keys['ArrowDown']),
-      left:     !!(keys['KeyA'] || keys['ArrowLeft']),
-      right:    !!(keys['KeyD'] || keys['ArrowRight']),
-      throw:    tp,
-      aimAngle: angle,
+      up:         !!(keys['KeyW'] || keys['ArrowUp']),
+      down:       !!(keys['KeyS'] || keys['ArrowDown']),
+      left:       !!(keys['KeyA'] || keys['ArrowLeft']),
+      right:      !!(keys['KeyD'] || keys['ArrowRight']),
+      build:      bp,
+      pickup:     pp,
+      sprint:     sp,
+      throw:      tp,
+      throwPower: pow,
     };
+  }
+
+  // How charged is the throw right now (0–1), for HUD charge bar
+  function getSpaceCharge() {
+    if (!keys['Space'] || !spaceDownAt) return 0;
+    return Math.min((Date.now() - spaceDownAt) / 1000, 1);
   }
 
   function isChatKey(e) {
     return e.code === 'Enter' || e.key === 'Enter';
   }
 
-  function isUp()    { return !!(keys['KeyW'] || keys['ArrowUp']); }
-  function isDown()  { return !!(keys['KeyS'] || keys['ArrowDown']); }
-  function isLeft()  { return !!(keys['KeyA'] || keys['ArrowLeft']); }
-  function isRight() { return !!(keys['KeyD'] || keys['ArrowRight']); }
-
-  return { getInputState, isChatKey, isUp, isDown, isLeft, isRight };
+  return { getInputState, getSpaceCharge, isChatKey };
 })();

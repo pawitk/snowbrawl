@@ -38,8 +38,6 @@ const Renderer = (() => {
 
   // Camera follows local player, clamped to map
   function updateCamera(px, py) {
-    const hw = MAP_W / 2;
-    const hh = MAP_H / 2;
     camX = 0;  // map fits entirely in canvas — no scrolling needed
     camY = 0;
   }
@@ -53,32 +51,43 @@ const Renderer = (() => {
     if (!gameState) return;
 
     ctx.save();
-    // Since map = canvas resolution, no camera transform needed
     ctx.clearRect(0, 0, MAP_W, MAP_H);
 
     // 1. Ground tiles
     drawGround(ctx, 0, 0, MAP_W, MAP_H);
 
-    // 2. Center line
+    // 2. Depleted tiles (scooped-out snow patches)
+    if (gameState.depletedTiles && gameState.depletedTiles.length > 0) {
+      drawDepletedTiles(ctx, gameState.depletedTiles);
+    }
+
+    // 3. Center line
     drawCenterLine(ctx);
 
-    // 3. Zone overlays during countdown
+    // 4. Zone overlays during countdown
     drawZoneOverlays(ctx, phase, countdown);
 
-    // 4. Snow piles
-    const piles = state.snowPiles || SNOW_PILES;
+    // 5. Snow piles (static + player-built barriers, sent in gameState.snowPiles)
+    const piles = gameState.snowPiles || state.snowPiles || SNOW_PILES;
     for (const pile of piles) {
       drawSnowPile(ctx, pile);
     }
 
-    // 5. Snowballs
-    if (gameState.snowballs) {
-      for (const b of gameState.snowballs) {
-        drawSnowball(ctx, b.x, b.y);
+    // 6. Dropped snowballs (resting on ground)
+    if (gameState.droppedBalls) {
+      for (const b of gameState.droppedBalls) {
+        drawSnowball(ctx, b.x, b.y, true);
       }
     }
 
-    // 6. Players (sorted by y for painter's depth)
+    // 7. Flying snowballs
+    if (gameState.snowballs) {
+      for (const b of gameState.snowballs) {
+        drawSnowball(ctx, b.x, b.y, false);
+      }
+    }
+
+    // 8. Players (sorted by y for painter's depth)
     if (gameState.players) {
       const plist = Object.values(gameState.players)
         .filter(p => p.alive)
@@ -86,7 +95,8 @@ const Renderer = (() => {
 
       for (const p of plist) {
         drawPlayer(ctx, p.x, p.y, p.team, p.health, p.aimAngle || 0,
-                   p.id === localPlayerId, p.name);
+                   p.id === localPlayerId, p.name,
+                   p.heldBall, p.buildProgress || 0, p.isSprinting);
       }
 
       // Ghost (eliminated) players — faded
@@ -94,12 +104,12 @@ const Renderer = (() => {
         if (p.alive) continue;
         ctx.save();
         ctx.globalAlpha = 0.35;
-        drawPlayer(ctx, p.x, p.y, p.team, 0, 0, false, p.name);
+        drawPlayer(ctx, p.x, p.y, p.team, 0, 0, false, p.name, false, 0, false);
         ctx.restore();
       }
     }
 
-    // 7. Particles
+    // 9. Particles
     updateAndDrawParticles(ctx, dt);
 
     ctx.restore();
@@ -107,16 +117,16 @@ const Renderer = (() => {
 
   // ── HUD rendering ──────────────────────────────────────────────────────────
 
-  function updateHUD(gameState, localPlayerId, phase, lastThrowTime) {
+  function updateHUD(gameState, localPlayerId, phase, spaceCharge) {
     if (!gameState || !localPlayerId) return;
     const me = gameState.players && gameState.players[localPlayerId];
 
     // Health
     const hudHealth = document.getElementById('hud-health');
     if (hudHealth && me) {
-      const pct = me.health / PLAYER_HP;
+      const pct  = me.health / PLAYER_HP;
       const bars = 4;
-      let html = '';
+      let html   = '';
       for (let i = 0; i < bars; i++) {
         const filled = pct > i / bars;
         html += `<div class="hp-block ${filled ? 'filled' : 'empty'} team-${me.team}"></div>`;
@@ -124,7 +134,7 @@ const Renderer = (() => {
       hudHealth.innerHTML = html;
     }
 
-    // Team
+    // Team badge
     const hudTeam = document.getElementById('hud-team');
     if (hudTeam && me) {
       hudTeam.textContent = TEAM_NAME[me.team].toUpperCase();
@@ -139,27 +149,56 @@ const Renderer = (() => {
       hudPlayers.innerHTML = `<span class="blue">${aliveBlue} ❄</span> <span class="vs">vs</span> <span class="red">🔥 ${aliveRed}</span>`;
     }
 
-    // Throw cooldown indicator
+    // Snowball / build / throw status indicator
     const hudCooldown = document.getElementById('hud-cooldown');
-    if (hudCooldown) {
-      const elapsed = Date.now() - (lastThrowTime || 0);
-      const ready   = elapsed >= BALL_COOLDOWN;
-      hudCooldown.textContent = ready ? '● THROW READY' : '○ RELOADING…';
-      hudCooldown.className   = `hud-cooldown ${ready ? 'ready' : 'reload'}`;
+    if (hudCooldown && me) {
+      if (me.isBuilding) {
+        const pct  = Math.round((me.buildProgress || 0) * 100);
+        const bars = Math.round((me.buildProgress || 0) * 8);
+        const bar  = '█'.repeat(bars) + '░'.repeat(8 - bars);
+        hudCooldown.textContent = `[${bar}] BUILDING ${pct}%`;
+        hudCooldown.className   = 'hud-cooldown reload';
+      } else if (me.heldBall) {
+        if (spaceCharge > 0) {
+          const bars = Math.round(spaceCharge * 8);
+          const bar  = '█'.repeat(bars) + '░'.repeat(8 - bars);
+          hudCooldown.textContent = `[${bar}] CHARGING`;
+          hudCooldown.className   = 'hud-cooldown ready';
+        } else {
+          hudCooldown.textContent = '● SPACE=THROW  (hold for power)';
+          hudCooldown.className   = 'hud-cooldown ready';
+        }
+      } else {
+        hudCooldown.textContent = '○ J=BUILD  H=PICKUP';
+        hudCooldown.className   = 'hud-cooldown reload';
+      }
+    }
+
+    // Sprint indicator
+    const hudSprint = document.getElementById('hud-sprint');
+    if (hudSprint && me) {
+      if (me.isSprinting) {
+        const secs = ((me.sprintLeft || 0) / 1000).toFixed(1);
+        hudSprint.textContent = `⚡ SPRINTING ${secs}s`;
+        hudSprint.className   = 'hud-sprint active';
+      } else {
+        hudSprint.textContent = me.health > 25 ? '⚡ SHIFT=SPRINT (-1 HP bar)' : '⚡ TOO LOW HP';
+        hudSprint.className   = 'hud-sprint ' + (me.health > 25 ? 'ready' : 'empty');
+      }
     }
 
     // Scores
     const hudScores = document.getElementById('hud-scores');
     if (hudScores && gameState.players) {
       const scoreBlue = Object.values(gameState.players)
-        .filter(p => p.team === 0).reduce((s,p) => s + (p.score||0), 0);
+        .filter(p => p.team === 0).reduce((s, p) => s + (p.score || 0), 0);
       const scoreRed  = Object.values(gameState.players)
-        .filter(p => p.team === 1).reduce((s,p) => s + (p.score||0), 0);
+        .filter(p => p.team === 1).reduce((s, p) => s + (p.score || 0), 0);
       hudScores.innerHTML = `<span class="blue">${scoreBlue}</span> <span class="sep">—</span> <span class="red">${scoreRed}</span>`;
     }
   }
 
-  // Returns the canvas-space position of a world point (for aim angle calc)
+  // Returns the canvas-space position of a world point
   function getCanvasPos(wx, wy) {
     return { x: wx, y: wy };  // 1:1 since canvas = world resolution
   }

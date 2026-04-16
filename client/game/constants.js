@@ -18,7 +18,6 @@ const HP_PER_HIT    = 25;
 
 // Snowball
 const BALL_RADIUS   = 5;
-const BALL_COOLDOWN = 750;  // ms
 
 // Team colour palette
 const TEAM_COLOR   = ['#4488ff', '#ff4444'];
