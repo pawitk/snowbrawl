@@ -238,6 +238,9 @@ class GameRoom {
         p.isSprinting = false;
       }
 
+      // No movement while building a snowball
+      if (p.isBuilding) continue;
+
       let dx = 0, dy = 0;
       if (p.input.up)    dy -= 1;
       if (p.input.down)  dy += 1;
@@ -398,20 +401,20 @@ class GameRoom {
     if (p.heldBall) {
       // Drop the held ball at current position
       p.heldBall = false;
-      const id      = uuidv4().substring(0, 8);
-      const tileKey = this._tileKey(p.x, p.y);
-      this.droppedBalls.push({ id, x: p.x, y: p.y, tileKey });
+      const id       = uuidv4().substring(0, 8);
+      const stackKey = this._stackKey(p.x, p.y);  // coarse 32 px grid
+      this.droppedBalls.push({ id, x: p.x, y: p.y, stackKey });
 
-      // If 3 balls dropped on the same tile, convert to a barrier
-      const sameTile = this.droppedBalls.filter(b => b.tileKey === tileKey);
-      if (sameTile.length >= 3) {
-        const toRemove = new Set(sameTile.slice(0, 3).map(b => b.id));
+      // If 3 balls have been dropped in the same 32 px region → barrier
+      const samePatch = this.droppedBalls.filter(b => b.stackKey === stackKey);
+      if (samePatch.length >= 3) {
+        const toRemove = new Set(samePatch.slice(0, 3).map(b => b.id));
         this.droppedBalls = this.droppedBalls.filter(b => !toRemove.has(b.id));
-        const [col, row]  = tileKey.split('_').map(Number);
+        const [col2, row2] = stackKey.split('_').map(Number);
         this.dynamicPiles.push({
-          id: `dyn_${col}_${row}_${Date.now()}`,
-          x:  col * TILE,
-          y:  row * TILE,
+          id: `dyn_${col2}_${row2}_${Date.now()}`,
+          x:  col2 * TILE * 2,
+          y:  row2 * TILE * 2,
           w:  TILE * 2,
           h:  TILE * 2,
         });
@@ -469,6 +472,12 @@ class GameRoom {
 
   _tileKey(x, y) {
     return `${Math.floor(x / TILE)}_${Math.floor(y / TILE)}`;
+  }
+
+  // Coarser 32 px (2×TILE) grid used for barrier stacking — forgiving enough
+  // that slight player drift between drops still counts as the same spot.
+  _stackKey(x, y) {
+    return `${Math.floor(x / (TILE * 2))}_${Math.floor(y / (TILE * 2))}`;
   }
 
   _spawnX(team) {

@@ -12,38 +12,38 @@ const Input = (() => {
   let throwPower   = 0;       // ms Space was held when released (0–1000)
   let spaceDownAt  = 0;       // timestamp when Space was first pressed
 
-  window.addEventListener('keydown', e => {
-    const inInput = document.activeElement &&
-      (document.activeElement.tagName === 'INPUT' ||
-       document.activeElement.tagName === 'TEXTAREA');
+  // Returns true only when a VISIBLE input/textarea has focus.
+  // Hidden inputs (lobby chat behind the game screen, etc.) don't count.
+  function chatFocused() {
+    const el = document.activeElement;
+    return !!(el &&
+      (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') &&
+      el.offsetParent !== null);   // offsetParent is null when display:none
+  }
 
-    if (!inInput && ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) {
+  window.addEventListener('keydown', e => {
+    if (chatFocused()) return;  // typing in chat — ignore game keys entirely
+
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) {
       e.preventDefault();
     }
 
-    if (!inInput && !e.repeat) {
-      if (e.code === 'KeyJ')                           buildPulse  = true;
-      if (e.code === 'KeyH')                           pickupPulse = true;
-      if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') sprintPulse = true;
-      if (e.code === 'Space')                          spaceDownAt = Date.now();
+    if (!e.repeat) {
+      if (e.code === 'KeyJ')                                    buildPulse  = true;
+      if (e.code === 'KeyH')                                    pickupPulse = true;
+      if (e.code === 'ShiftLeft' || e.code === 'ShiftRight')    sprintPulse = true;
+      if (e.code === 'Space')                                   spaceDownAt = Date.now();
     }
 
-    if (!inInput) {
-      keys[e.code] = true;
-    }
+    keys[e.code] = true;
   });
 
   window.addEventListener('keyup', e => {
-    const inInput = document.activeElement &&
-      (document.activeElement.tagName === 'INPUT' ||
-       document.activeElement.tagName === 'TEXTAREA');
-
-    if (!inInput && e.code === 'Space' && keys['Space']) {
+    if (!chatFocused() && e.code === 'Space' && keys['Space']) {
       throwPulse  = true;
       throwPower  = spaceDownAt ? Math.min(Date.now() - spaceDownAt, 1000) : 0;
       spaceDownAt = 0;
     }
-
     keys[e.code] = false;
   });
 

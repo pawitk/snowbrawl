@@ -68,10 +68,11 @@ const Game = (() => {
                roomState.gameState.players &&
                roomState.gameState.players[localPlayerId];
 
-    // Don't send game input while typing in chat
-    const inChat = document.activeElement &&
-      (document.activeElement.tagName === 'INPUT' ||
-       document.activeElement.tagName === 'TEXTAREA');
+    // Don't send game input while a visible chat box is focused
+    const el = document.activeElement;
+    const inChat = !!(el &&
+      (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') &&
+      el.offsetParent !== null);
 
     if (SB.socket && me && !inChat &&
         (roomState.phase === 'playing' || roomState.phase === 'countdown')) {
